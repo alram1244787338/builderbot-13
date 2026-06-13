@@ -1,77 +1,37 @@
-/node_modules
-/packages/repl
-/packages/portal/server
-/packages/*/starters
-/packages/*/node_modules
-/packages/*/*/node_modules
-/packages/*/dist
-/packages/*/*/dist
-/packages/*/*/tokens/*
-/packages/*/docs/dist
-/packages/provider/src/venom/tokens
-session.json
-chats/*
-!chats/.gitkeep
-media/*
-!media/.gitkeep
-mediaSend/*
-!mediaSend/.gitkeep
-!mediaSend/nota-de-voz.mp3
-.env
-.wwebjs_auth
-.wwebjs_cache
-/session
-/session/*
-/tokens
-/tokens/*
-packages/cli/config.json
-config.json
-.yarnrc.yml
-docs/releases/*.md
-coverage/
-*.lcov
-log
-log/*
-*.log
-*.tgz
-lib
-tmp/
-!tmp/chatwoot-media/.gitkeep
-.yarn/*
-!.yarn/releases
-!.yarn/plugins/@yarnpkg/plugin-postinstall.cjs
-.fleet/
-example-app*/
-base-*/
-test-*.json
-!starters/apps/base-*/
-qr.svg
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.whl
+
+# Go
+vendor/
+go.sum
+
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 package-lock.json
-yarn-error.log
-.npmrc
-.nyc_output/*
-# Local Netlify folder
-.netlify
-.secrets
-_tmp_*
-# managed
-**.data.json
-**.node-persist**
-**_IGNORE_**
-# end managed
+yarn.lock
 
-/packages/provider-wppconnect/bot/__mock__/*.opus
-/packages/provider-wppconnect/tokens
-/packages/provider-wppconnect/ruta-de-prueba
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 
-**/tokens/**
-.nx/*
-nonExistingFilePath
-*.opus 
-!.gitignore
-/packages/provider-web-whatsapp/bot.qr.png
-/packages/bot/__mock__/*.opus
-/packages/provider-baileys/*_sessions
-/packages/provider-telegram/*_sessions
-/packages/provider-baileys/*.png
-/packages/provider-web-whatsapp/.wwebjs_auth/*
+# OS
+.DS_Store
+Thumbs.db
