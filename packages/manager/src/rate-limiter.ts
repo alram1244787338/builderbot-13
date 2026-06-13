@@ -58,6 +58,77 @@ export class RateLimiter {
     }
 
     /**
+     * Check rate limit status WITHOUT incrementing the counter.
+     * Use this for pre-checks before starting a multi-step operation.
+     */
+    checkLimit(req: IncomingMessage): { limited: boolean; remaining: number; resetTime: number } {
+        const url = req.url || '/'
+
+        // Skip certain paths
+        if (this.config.skipPaths.some((path) => url.startsWith(path))) {
+            return { limited: false, remaining: this.config.maxRequests, resetTime: 0 }
+        }
+
+        const key = this.config.keyExtractor(req)
+        const now = Date.now()
+
+        const entry = this.store.get(key)
+
+        // If no entry or window expired, full budget available
+        if (!entry || now > entry.resetTime) {
+            return {
+                limited: false,
+                remaining: this.config.maxRequests,
+                resetTime: entry ? entry.resetTime : now + this.config.windowMs,
+            }
+        }
+
+        // Check if already over limit
+        if (entry.count >= this.config.maxRequests) {
+            return {
+                limited: true,
+                remaining: 0,
+                resetTime: entry.resetTime,
+            }
+        }
+
+        return {
+            limited: false,
+            remaining: this.config.maxRequests - entry.count,
+            resetTime: entry.resetTime,
+        }
+    }
+
+    /**
+     * Record a request (increment counter) without checking.
+     * Use after a successful operation to commit the rate limit usage.
+     */
+    recordRequest(req: IncomingMessage): void {
+        const url = req.url || '/'
+
+        // Skip certain paths
+        if (this.config.skipPaths.some((path) => url.startsWith(path))) {
+            return
+        }
+
+        const key = this.config.keyExtractor(req)
+        const now = Date.now()
+
+        let entry = this.store.get(key)
+
+        if (!entry || now > entry.resetTime) {
+            entry = {
+                count: 1,
+                resetTime: now + this.config.windowMs,
+            }
+            this.store.set(key, entry)
+            return
+        }
+
+        entry.count++
+    }
+
+    /**
      * Check if request should be rate limited
      */
     isRateLimited(req: IncomingMessage): { limited: boolean; remaining: number; resetTime: number } {
@@ -111,26 +182,60 @@ export class RateLimiter {
      */
     middleware() {
         return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
-            const result = this.isRateLimited(req)
+            const isMutation = req.method === 'POST' || req.method === 'PUT' ||
+                req.method === 'DELETE' || req.method === 'PATCH'
 
-            // Set rate limit headers
-            res.setHeader('X-RateLimit-Limit', this.config.maxRequests.toString())
-            res.setHeader('X-RateLimit-Remaining', result.remaining.toString())
-            res.setHeader('X-RateLimit-Reset', result.resetTime.toString())
+            if (isMutation) {
+                // For mutations: check without incrementing, handler commits on success
+                const result = this.checkLimit(req)
 
-            if (result.limited) {
-                res.setHeader('Retry-After', Math.ceil((result.resetTime - Date.now()) / 1000).toString())
-                res.writeHead(429, { 'Content-Type': 'application/json' })
-                res.end(
-                    JSON.stringify({
-                        error: this.config.message,
-                        retryAfter: Math.ceil((result.resetTime - Date.now()) / 1000),
-                    })
-                )
-                return
+                res.setHeader('X-RateLimit-Limit', this.config.maxRequests.toString())
+                res.setHeader('X-RateLimit-Remaining', result.remaining.toString())
+                res.setHeader('X-RateLimit-Reset', result.resetTime.toString())
+
+                if (result.limited) {
+                    res.setHeader(
+                        'Retry-After',
+                        Math.ceil((result.resetTime - Date.now()) / 1000).toString()
+                    )
+                    res.writeHead(429, { 'Content-Type': 'application/json' })
+                    res.end(
+                        JSON.stringify({
+                            error: this.config.message,
+                            retryAfter: Math.ceil((result.resetTime - Date.now()) / 1000),
+                        })
+                    )
+                    return
+                }
+
+                // Attach commit function for handler to call on success
+                ;(req as any).__commitRateLimit = () => this.recordRequest(req)
+                next()
+            } else {
+                // For reads: use standard increment behavior
+                const result = this.isRateLimited(req)
+
+                res.setHeader('X-RateLimit-Limit', this.config.maxRequests.toString())
+                res.setHeader('X-RateLimit-Remaining', result.remaining.toString())
+                res.setHeader('X-RateLimit-Reset', result.resetTime.toString())
+
+                if (result.limited) {
+                    res.setHeader(
+                        'Retry-After',
+                        Math.ceil((result.resetTime - Date.now()) / 1000).toString()
+                    )
+                    res.writeHead(429, { 'Content-Type': 'application/json' })
+                    res.end(
+                        JSON.stringify({
+                            error: this.config.message,
+                            retryAfter: Math.ceil((result.resetTime - Date.now()) / 1000),
+                        })
+                    )
+                    return
+                }
+
+                next()
             }
-
-            next()
         }
     }
 

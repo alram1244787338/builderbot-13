@@ -4,6 +4,13 @@ import type { CreateFlowInput, UpdateFlowInput, FlowStep } from './schemas'
 import type { Flow } from './types'
 
 /**
+ * Snapshot of the entire flow registry state, used for rollback
+ */
+export interface FlowRegistrySnapshot {
+    flows: Map<string, FlowDefinition>
+}
+
+/**
  * Flow definition stored in registry
  */
 export interface FlowDefinition {
@@ -27,9 +34,15 @@ export class FlowRegistry {
     private flows: Map<string, FlowDefinition> = new Map()
 
     /**
-     * Register a programmatic flow (created with addKeyword)
+     * Register a programmatic flow (created with addKeyword).
+     * If a flow with the same id already exists, it will NOT be overwritten
+     * unless `force` is true — this prevents duplicate registration.
      */
-    register(id: string, name: string, flow: Flow): FlowDefinition {
+    register(id: string, name: string, flow: Flow, force = false): FlowDefinition {
+        if (this.flows.has(id) && !force) {
+            return this.flows.get(id)!
+        }
+
         const definition: FlowDefinition = {
             id,
             name,
@@ -43,12 +56,19 @@ export class FlowRegistry {
     }
 
     /**
-     * Register a dynamic flow from JSON configuration
+     * Register a dynamic flow from JSON configuration.
+     * Throws if a flow with the same id already exists to prevent duplicate registration.
      */
-    registerDynamic(config: CreateFlowInput): FlowDefinition {
+    registerDynamic(config: CreateFlowInput, allowOverwrite = false): FlowDefinition {
         const { id, name, keyword, steps } = config
 
+        if (this.flows.has(id) && !allowOverwrite) {
+            throw new Error(`Flow with id "${id}" already exists`)
+        }
+
         const flow = this.buildFlowFromSteps(keyword, steps)
+
+        const existing = this.flows.get(id)
 
         const definition: FlowDefinition = {
             id,
@@ -56,7 +76,7 @@ export class FlowRegistry {
             flow,
             dynamic: true,
             config,
-            createdAt: new Date(),
+            createdAt: existing?.createdAt ?? new Date(),
             updatedAt: new Date(),
         }
 
@@ -65,20 +85,30 @@ export class FlowRegistry {
     }
 
     /**
-     * Update a dynamic flow
+     * Update a dynamic flow.
+     * Returns the previous definition on success (useful for rollback), or null if not found.
      */
-    update(id: string, updates: UpdateFlowInput): FlowDefinition | null {
+    update(id: string, updates: UpdateFlowInput): { definition: FlowDefinition; previous: FlowDefinition } | null {
         const existing = this.flows.get(id)
         if (!existing || !existing.dynamic || !existing.config) {
             return null
         }
 
+        // Deep clone existing config for previous snapshot
+        const previousConfig: CreateFlowInput = JSON.parse(JSON.stringify(existing.config))
+        const previous: FlowDefinition = {
+            ...existing,
+            config: previousConfig,
+            createdAt: new Date(existing.createdAt.getTime()),
+            updatedAt: new Date(existing.updatedAt.getTime()),
+        }
+
         // Merge updates with existing config
         const newConfig: CreateFlowInput = {
             ...existing.config,
-            ...(updates.name && { name: updates.name }),
-            ...(updates.keyword && { keyword: updates.keyword }),
-            ...(updates.steps && { steps: updates.steps }),
+            ...(updates.name !== undefined && { name: updates.name }),
+            ...(updates.keyword !== undefined && { keyword: updates.keyword }),
+            ...(updates.steps !== undefined && { steps: updates.steps }),
         }
 
         // Rebuild flow
@@ -95,14 +125,56 @@ export class FlowRegistry {
         }
 
         this.flows.set(id, definition)
-        return definition
+        return { definition, previous }
     }
 
     /**
-     * Remove a flow from registry
+     * Remove a flow from registry.
+     * Returns the removed definition (useful for rollback), or false if not found.
      */
-    remove(id: string): boolean {
-        return this.flows.delete(id)
+    remove(id: string): FlowDefinition | false {
+        const existing = this.flows.get(id)
+        if (!existing) return false
+        this.flows.delete(id)
+        return existing
+    }
+
+    /**
+     * Restore a previously removed flow definition (for rollback)
+     */
+    restore(definition: FlowDefinition): void {
+        this.flows.set(definition.id, definition)
+    }
+
+    /**
+     * Take a snapshot of the entire registry state for later rollback
+     */
+    snapshot(): FlowRegistrySnapshot {
+        const cloned = new Map<string, FlowDefinition>()
+        for (const [key, def] of this.flows.entries()) {
+            cloned.set(key, {
+                ...def,
+                config: def.config ? JSON.parse(JSON.stringify(def.config)) : undefined,
+                createdAt: new Date(def.createdAt.getTime()),
+                updatedAt: new Date(def.updatedAt.getTime()),
+            })
+        }
+        return { flows: cloned }
+    }
+
+    /**
+     * Restore the registry to a previous snapshot state (full rollback)
+     */
+    rollback(snapshot: FlowRegistrySnapshot): void {
+        this.flows = new Map<string, FlowDefinition>()
+        for (const [key, def] of snapshot.flows.entries()) {
+            this.flows.set(key, {
+                ...def,
+                config: def.config ? JSON.parse(JSON.stringify(def.config)) : undefined,
+                createdAt: new Date(def.createdAt.getTime()),
+                updatedAt: new Date(def.updatedAt.getTime()),
+            })
+        }
     }
 
     /**
