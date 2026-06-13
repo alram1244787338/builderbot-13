@@ -41,6 +41,12 @@ class CoreClass<P extends ProviderClass = any, D extends MemoryDB = any> extends
     stateHandler = new SingleState()
     globalStateHandler = new GlobalState()
     dynamicBlacklist = new BlackList()
+    /**
+     * Per-user promise chains to serialize handleMsg calls for the same user.
+     * Prevents concurrent messages from the same user from racing on database
+     * reads/writes and flow matching.
+     */
+    private handleMsgChains: Map<string, Promise<any>> = new Map()
     generalArgs: GeneralArgs & { host?: string } = {
         blackList: [],
         listEvents: {},
@@ -140,6 +146,20 @@ class CoreClass<P extends ProviderClass = any, D extends MemoryDB = any> extends
     }
 
     handleMsg = async (messageCtxInComing: MessageContextIncoming) => {
+        const { from } = messageCtxInComing
+
+        // Serialize message handling per user to prevent race conditions
+        // when multiple messages arrive rapidly from the same user.
+        const prevChain = this.handleMsgChains.get(from) || Promise.resolve()
+        const current = prevChain
+            .catch(() => {}) // Don't let previous errors affect this message
+            .then(() => this._handleMsgInternal(messageCtxInComing))
+
+        this.handleMsgChains.set(from, current.catch(() => {})) // Store chain, swallow errors for next link
+        return current
+    }
+
+    private _handleMsgInternal = async (messageCtxInComing: MessageContextIncoming) => {
         logger.log(`[handleMsg]: `, messageCtxInComing)
         idleForCallback.stop(messageCtxInComing)
         const { body, from } = messageCtxInComing
@@ -660,34 +680,24 @@ class CoreClass<P extends ProviderClass = any, D extends MemoryDB = any> extends
         }
 
         if (!prevMsg?.options?.capture) {
-            msgToSend = this.flowClass.find(this.generalArgs.listEvents.WELCOME) || []
-
+            // Default to WELCOME event, then override with more specific event types.
+            // Using else-if to prevent multiple event flows from matching.
             if (LIST_REGEX.REGEX_EVENT_LOCATION.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.LOCATION) || []
-            }
-
-            if (LIST_REGEX.REGEX_EVENT_MEDIA.test(body)) {
+            } else if (LIST_REGEX.REGEX_EVENT_MEDIA.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.MEDIA) || []
-            }
-
-            if (LIST_REGEX.REGEX_EVENT_DOCUMENT.test(body)) {
+            } else if (LIST_REGEX.REGEX_EVENT_DOCUMENT.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.DOCUMENT) || []
-            }
-
-            if (LIST_REGEX.REGEX_EVENT_VOICE_NOTE.test(body)) {
+            } else if (LIST_REGEX.REGEX_EVENT_VOICE_NOTE.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.VOICE_NOTE) || []
-            }
-
-            if (LIST_REGEX.REGEX_EVENT_ORDER.test(body)) {
+            } else if (LIST_REGEX.REGEX_EVENT_ORDER.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.ORDER) || []
-            }
-
-            if (LIST_REGEX.REGEX_EVENT_TEMPLATE.test(body)) {
+            } else if (LIST_REGEX.REGEX_EVENT_TEMPLATE.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.TEMPLATE) || []
-            }
-
-            if (LIST_REGEX.REGEX_EVENT_CALL.test(body)) {
+            } else if (LIST_REGEX.REGEX_EVENT_CALL.test(body)) {
                 msgToSend = this.flowClass.find(this.generalArgs.listEvents.CALL) || []
+            } else {
+                msgToSend = this.flowClass.find(this.generalArgs.listEvents.WELCOME) || []
             }
         }
 

@@ -35,13 +35,25 @@ class Queue<T> {
     }
 
     /**
-     * Limpiar colar de proceso
+     * Limpiar cola de proceso
      * @param from
      * @param item
      */
     public clearAndDone(from: string, item: { fingerIdRef: string }) {
         this.clearIdFromCallback(from, item.fingerIdRef)
+        this.clearTimer(item.fingerIdRef)
         this.logger.log(`${from}: SUCCESS: ${item.fingerIdRef}`)
+    }
+
+    /**
+     * Clear a single timer by fingerIdRef (scoped to one item, not global).
+     */
+    private clearTimer(fingerIdRef: string): void {
+        const t = this.timers.get(fingerIdRef)
+        if (t && typeof t !== 'boolean') {
+            clearTimeout(t as NodeJS.Timeout)
+        }
+        this.timers.delete(fingerIdRef)
     }
 
     private async processItem(from: string, item: QueueItem<T>): Promise<void> {
@@ -51,12 +63,13 @@ class Queue<T> {
                 refToPromise.timerPromise,
                 refToPromise.promiseInFunc().then(() => {
                     refToPromise.cancel()
-                    return 'success' as unknown as T // Assuming 'success' is a valid T
+                    return 'success' as unknown as T
                 }),
             ])
             item.resolve(value)
         } catch (err) {
-            this.clearIdFromCallback(from, item.fingerIdRef)
+            // Only clean the timer; clearAndDone in finally handles the rest
+            this.clearTimer(item.fingerIdRef)
             this.logger.error(`${from}:ERROR: ${JSON.stringify(err)}`)
             item.reject(err)
         }
@@ -75,7 +88,6 @@ class Queue<T> {
         }
 
         const queueByFrom = this.queue.get(from)!
-        const workingByFrom = this.workingOnPromise.get(from)!
 
         /**
          *
@@ -103,9 +115,7 @@ class Queue<T> {
             })
 
             const cancel = () => {
-                const t = this.timers.get(fingerIdRef)
-                if (t && typeof t !== 'boolean') clearTimeout(t as NodeJS.Timeout)
-                this.timers.delete(fingerIdRef)
+                this.clearTimer(fingerIdRef)
                 this.clearAndDone(from, item)
             }
             return { promiseInFunc, timer, timerPromise, cancel }
@@ -127,33 +137,42 @@ class Queue<T> {
                 reject,
             })
 
-            if (!workingByFrom) {
+            if (!this.workingOnPromise.get(from)) {
                 this.logger.log(`${from}: EXECUTING: ${fingerIdRef}`)
-                this.processQueue(from)
                 this.workingOnPromise.set(from, true)
+                this.processQueue(from)
             }
         })
     }
 
     async processQueue(from: string): Promise<void> {
-        const queueByFrom = this.queue.get(from)!
+        const queueByFrom = this.queue.get(from)
+        if (!queueByFrom) {
+            this.workingOnPromise.set(from, false)
+            return
+        }
+
         while (queueByFrom.length > 0) {
-            // Procesar hasta el límite de concurrencia configurado
-            const tasksToProcess = queueByFrom.splice(0, this.concurrencyLimit)
-            const promises = tasksToProcess.map((item) =>
-                this.processItem(from, item).finally(() => this.clearAndDone(from, item))
-            )
-            await Promise.all(promises)
+            // Procesar UN solo item a la vez por usuario para mantener el orden
+            const item = queueByFrom.shift()!
+            if (item.cancelled) continue
+
+            try {
+                await this.processItem(from, item)
+            } catch (_err) {
+                // El error ya fue gestionado en processItem (item.reject llamado).
+                // Continuamos con el siguiente item en la cola.
+            } finally {
+                this.clearAndDone(from, item)
+            }
         }
 
         this.workingOnPromise.set(from, false)
-        await this.clearQueue(from)
     }
 
     async clearQueue(from: string): Promise<number> {
         if (this.queue.has(from)) {
             const queueByFrom = this.queue.get(from)!
-            const workingByFrom = this.workingOnPromise.get(from)!
 
             try {
                 for (const item of queueByFrom) {
@@ -165,18 +184,11 @@ class Queue<T> {
             } finally {
                 this.queue.set(from, [])
                 this.idsCallbacks.set(from, [])
-                this.timers.forEach((timer, key) => {
-                    if (timer !== false) {
-                        clearTimeout(timer as NodeJS.Timeout)
-                    }
-                    this.timers.delete(key)
-                })
+                // Solo limpiar timers que pertenecen a este usuario, no globalmente
+                // Los timers de items en cola se limpian vía clearAndDone -> clearTimer
             }
 
-            if (workingByFrom) {
-                this.workingOnPromise.set(from, false)
-            }
-            // Después de limpiar, no quedan elementos en cola.
+            this.workingOnPromise.set(from, false)
             return 0
         }
         return 0
